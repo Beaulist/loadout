@@ -64,7 +64,7 @@
     {
       "dest": ".claude/agents/risk_classifier.md",
       "src": "agents/risk_classifier/risk_classifier.md",
-      "sha256": "e579e5616307891373709ba3c438d9360594c1020f778bf13387438e11f8a00a"
+      "sha256": "c07cf31d6caa56dd27fd1f166acdc579d80d7fe35dbc72de06fbf3d510afcde6"
     },
     {
       "dest": ".claude/agents/verifier.md",
