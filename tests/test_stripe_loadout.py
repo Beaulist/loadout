@@ -186,3 +186,31 @@ def test_stripe_skill_source_pins_exist() -> None:
         if src == "skills/stripe-projects" and "**Adapted**" in text:
             adaptations = text.split("## Adaptations from upstream", 1)[1]
             assert "docs.stripe.com/stripe-cli" in adaptations
+
+
+def test_stripe_apps_gates_feedback_on_explicit_approval() -> None:
+    skill_root = REPO / "skills" / "stripe-apps"
+    skill = (skill_root / "SKILL.md").read_text()
+    workflow = (skill_root / "references" / "workflow.md").read_text()
+    feedback = (skill_root / "references" / "feedback.md").read_text()
+    source = (skill_root / "SOURCE.md").read_text()
+    for path, text in (
+        ("SKILL.md", skill),
+        ("references/workflow.md", workflow),
+        ("references/feedback.md", feedback),
+    ):
+        lowered = text.lower()
+        assert "stripe feedback" in lowered, f"{path} never names stripe feedback"
+        assert "explicit user approval" in lowered, f"{path} missing approval gate"
+        assert "do not run `stripe feedback`" in lowered, f"{path} missing refusal"
+        assert "a skipped or refused report is not a skill failure" in lowered, (
+            f"{path} missing skip-is-not-failure sentence"
+        )
+        assert "wait for explicit user approval" in lowered, f"{path} missing wait-for-approval gate"
+    adaptations = source.split("## Adaptations from upstream", 1)[1]
+    assert "feedback.md" in adaptations
+    assert "**Adapted**" in adaptations
+    verbatim = next(
+        line for line in adaptations.splitlines() if "Upstream-verbatim" in line
+    )
+    assert "feedback.md" not in verbatim
