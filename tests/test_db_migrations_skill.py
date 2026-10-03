@@ -1,0 +1,513 @@
+"""Contracts for the db-migrations skill: runner required, out-of-band DDL refused."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from loadout.frontmatter import parse_skill_md, split_frontmatter
+from loadout.sync import sync
+
+REPO = Path(__file__).resolve().parent.parent
+SKILL_PATH = REPO / "skills" / "db-migrations" / "SKILL.md"
+
+_REQUIRED = (
+    "urgency does not create an exception",
+    "sql editor",
+    "table editor",
+    "supabase db query",
+    "execute_sql",
+    "supabase migration new",
+    "supabase migration up",
+    "supabase db push",
+    "supabase db pull",
+    "supabase migration repair",
+    "alembic upgrade head",
+    "alembic_version",
+    "supabase_migrations.schema_migrations",
+    "do not invent a runner",
+    "do not use repair to skip a migration",
+    "information_schema",
+    "pg_catalog",
+    "copy",
+    "grant",
+    "revoke",
+    "connection string",
+    "batch",
+    "commit after each batch",
+    "follow-up job",
+    "is null",
+    "order by id",
+    "zero rows",
+    "statement_timeout",
+    "lock_timeout",
+    "autocommit",
+    "cannot run inside a transaction",
+    "invalid index",
+    "drop index concurrently",
+    "one apply",
+    "if the runner fails, stop",
+)
+# IN-subquery LIMIT batches with no remaining-row predicate can re-select the same ids.
+_LIMIT_N_IN_SUBQUERY = re.compile(
+    r"where\s+id\s+in\s*\(\s*select\b(?![^)]*\bis\s+null\b)[^)]*\blimit\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_PER_BATCH_COMMIT = re.compile(
+    r"commit after (?:each|every) batch",
+    re.IGNORECASE,
+)
+# Short DDL timeouts cancel CREATE INDEX CONCURRENTLY and leave INVALID indexes.
+_SHORT_TIMEOUT_THEN_CONCURRENT = re.compile(
+    r"set(?:\s+local)?\s+(?:statement_timeout|lock_timeout)\s*=\s*'?5s'?"
+    r".{0,80}create\s+index\s+concurrently",
+    re.IGNORECASE | re.DOTALL,
+)
+_DROP_IF_EXISTS_THEN_CREATE = re.compile(
+    r"drop\s+index\s+concurrently\s+if\s+exists.{0,200}create\s+index\s+concurrently",
+    re.IGNORECASE | re.DOTALL,
+)
+_CONCURRENT_IN_TRANSACTION = re.compile(
+    r"create\s+index\s+concurrently.{0,120}transactional\s+migration",
+    re.IGNORECASE | re.DOTALL,
+)
+# SET lock_timeout / statement_timeout as session commands, not UPDATE SET col.
+_SET_BOTH_TIMEOUTS = re.compile(
+    r"set(?:\s+local)?\s+`?(?:lock_timeout|statement_timeout)`?"
+    r"\s+and\s+`?(?:lock_timeout|statement_timeout)`?",
+    re.IGNORECASE,
+)
+_SET_ONE_TIMEOUT = re.compile(
+    r"set(?:\s+local)?\s+`?(lock_timeout|statement_timeout)`?",
+    re.IGNORECASE,
+)
+_BACKFILL_DML = re.compile(r"\b(?:update|backfill)\b", re.IGNORECASE)
+
+# Refusal imperatives ("do not use the SQL editor", "never use the SQL editor") must not match.
+_RECOMMEND_EDITOR = re.compile(
+    r"(?<!not )(?<!ver )(?<!n't )\b(?:use|prefer|open) the (?:supabase )?sql editor\b",
+    re.IGNORECASE,
+)
+_UNRESTRICTED_ADHOC_READS = re.compile(
+    r"read-only queries may use.{0,80}(?:execute_sql|psql|supabase db query)",
+    re.IGNORECASE | re.DOTALL,
+)
+_DASHBOARD_THEN_PULL = re.compile(
+    r"(?:add|create|ship|apply)\b.{0,80}\b(?:column|schema|ddl|change)\b"
+    r".{0,80}\b(?:dashboard|table editor|sql editor)\b"
+    r".{0,120}\b(?:db pull|migration repair)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_RETRY_FAILED_APPLY = re.compile(
+    r"\b(?:db push|alembic upgrade head)\b.{0,40}\bagain\b.{0,40}\buntil it works\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_DUAL_AGENT_CI_APPLY = re.compile(r"\bfrom the agent while (?:ci|the project's ci)\b", re.IGNORECASE)
+
+
+def _recommends_dashboard_then_pull(text: str) -> bool:
+    """True when the text ships new schema via a UI and then pull/repair."""
+    for match in _DASHBOARD_THEN_PULL.finditer(text):
+        prefix = text[max(0, match.start() - 24) : match.start()].lower()
+        if re.search(r"\b(?:do not|must not|never|not)\s+$", prefix):
+            continue
+        return True
+    return False
+
+
+def _missing_required_phrases(text: str) -> list[str]:
+    lowered = text.lower()
+    return [phrase for phrase in _REQUIRED if phrase not in lowered]
+
+
+def _recommends_sql_editor(text: str) -> bool:
+    for match in _RECOMMEND_EDITOR.finditer(text):
+        prefix = text[max(0, match.start() - 80) : match.start()].lower()
+        if "refuse" in prefix:
+            continue
+        return True
+    return False
+
+
+def _teaches_limit_n_in_subquery_without_remaining_rows(text: str) -> bool:
+    """True when LIMIT-n IN-subquery backfill is taught without a remaining-row filter."""
+    for match in _LIMIT_N_IN_SUBQUERY.finditer(text):
+        prefix = text[max(0, match.start() - 80) : match.start()].lower()
+        if re.search(r"\b(?:do not|must not|never)\b", prefix):
+            continue
+        return True
+    return False
+
+
+def _backfill_commits_or_uses_follow_up_job(text: str) -> bool:
+    return _PER_BATCH_COMMIT.search(text) is not None or "follow-up job" in text.lower()
+
+
+def _backfill_paginates_remaining_rows(text: str) -> bool:
+    lowered = text.lower()
+    remaining = "is null" in lowered
+    keyset = "id >" in lowered or "last_id" in lowered or "order by id" in lowered
+    return remaining and keyset and "zero rows" in lowered
+
+
+def _window_sets_lock_and_statement_timeouts(window: str) -> bool:
+    """True when the window SETs both lock_timeout and statement_timeout."""
+    stripped = window.replace("`", "")
+    if _SET_BOTH_TIMEOUTS.search(stripped) is not None:
+        return True
+    names = {match.group(1).lower() for match in _SET_ONE_TIMEOUT.finditer(stripped)}
+    return "lock_timeout" in names and "statement_timeout" in names
+
+
+def _backfill_sets_session_timeouts(text: str) -> bool:
+    """True when SET lock_timeout and statement_timeout are tied to backfill DML."""
+    for match in _BACKFILL_DML.finditer(text):
+        window = text[max(0, match.start() - 220) : match.end() + 280]
+        if _window_sets_lock_and_statement_timeouts(window):
+            return True
+    return False
+
+
+def _teaches_concurrent_index_under_short_timeout(text: str) -> bool:
+    """True when CONCURRENTLY is taught with a 5s lock_timeout or statement_timeout."""
+    return _SHORT_TIMEOUT_THEN_CONCURRENT.search(text) is not None
+
+
+def _teaches_concurrent_index_in_transaction(text: str) -> bool:
+    """True when CREATE INDEX CONCURRENTLY is taught inside a transactional migration."""
+    for match in _CONCURRENT_IN_TRANSACTION.finditer(text):
+        window = text[max(0, match.start() - 80) : match.end()].lower()
+        if re.search(r"\b(?:do not|must not|never|cannot)\b", window):
+            continue
+        return True
+    return False
+
+
+def _concurrent_index_raises_lock_and_statement_timeouts(text: str) -> bool:
+    """True when the concurrent build raises or disables both session timeouts."""
+    for match in re.finditer(r"create\s+index\s+concurrently", text, re.IGNORECASE):
+        window = text[max(0, match.start() - 400) : match.end() + 400].lower()
+        if "raise" not in window and "disable" not in window:
+            continue
+        if "lock_timeout" in window and "statement_timeout" in window:
+            return True
+    return False
+
+
+def _concurrent_index_uses_autocommit_and_drop_invalid(text: str) -> bool:
+    lowered = text.lower()
+    autocommit = "autocommit" in lowered and "cannot run inside a transaction" in lowered
+    drop = "drop index concurrently" in lowered and "invalid index" in lowered
+    same_file = _DROP_IF_EXISTS_THEN_CREATE.search(text) is not None
+    return autocommit and drop and same_file
+
+
+def _skill_holds_db_migrations_contract(text: str) -> bool:
+    """True when the skill body satisfies every db-migrations contract gate.
+
+    Gates: required phrases; the word refuse; no SQL-editor recommend; no
+    unrestricted ad-hoc reads; no retry-until-works; no dual agent/CI apply;
+    no dashboard-then-pull; batched backfill commits or uses a follow-up job
+    and paginates remaining rows (not LIMIT-n IN-subquery); SET lock_timeout
+    and statement_timeout on backfill DML; concurrent indexes use autocommit
+    and same-file DROP IF EXISTS then CREATE of INVALID indexes (not short
+    timeout, not inside a transaction); raise or disable lock_timeout and
+    statement_timeout on the concurrent build.
+    """
+    if _missing_required_phrases(text):
+        return False
+    if "refuse" not in text.lower():
+        return False
+    if _recommends_sql_editor(text):
+        return False
+    if _UNRESTRICTED_ADHOC_READS.search(text) is not None:
+        return False
+    if _RETRY_FAILED_APPLY.search(text) is not None:
+        return False
+    if _DUAL_AGENT_CI_APPLY.search(text) is not None:
+        return False
+    if not _backfill_commits_or_uses_follow_up_job(text):
+        return False
+    if not _backfill_paginates_remaining_rows(text):
+        return False
+    if not _backfill_sets_session_timeouts(text):
+        return False
+    if _teaches_limit_n_in_subquery_without_remaining_rows(text):
+        return False
+    if _teaches_concurrent_index_under_short_timeout(text):
+        return False
+    if _teaches_concurrent_index_in_transaction(text):
+        return False
+    if not _concurrent_index_uses_autocommit_and_drop_invalid(text):
+        return False
+    if not _concurrent_index_raises_lock_and_statement_timeouts(text):
+        return False
+    return not _recommends_dashboard_then_pull(text)
+
+
+def test_skill_description_triggers_without_teaching_the_procedure() -> None:
+    text = SKILL_PATH.read_text()
+    meta = parse_skill_md(SKILL_PATH, text, dir_name="db-migrations")
+    description = meta.description
+    assert description.startswith("Use when")
+    lowered = description.lower()
+    assert "sql editor" in lowered
+    assert "execute_sql" in lowered
+    assert "rollback" not in lowered
+    assert "migration new" not in lowered
+    assert "upgrade head" not in lowered
+
+
+def test_skill_requires_runner_and_refuses_out_of_band_ddl() -> None:
+    text = SKILL_PATH.read_text()
+    assert _missing_required_phrases(text) == []
+    assert not _recommends_sql_editor(text)
+    assert _skill_holds_db_migrations_contract(text)
+    _frontmatter, body, _ = split_frontmatter(text)
+    lowered = body.lower()
+    assert "just this once" in lowered
+    assert "i'll commit the file later" in lowered
+    assert "the dashboard is faster" in lowered
+    assert "if not exists" in lowered
+    assert "stop at the first match" not in lowered
+    assert "if more than one" in lowered
+    assert "ci or the docs already use" in lowered
+    assert "read-only queries may use" not in lowered
+    assert "lock-short-transactions.md" in lowered
+    assert "create index concurrently" in lowered
+    assert "autocommit" in lowered
+    assert "cannot run inside a transaction" in lowered
+    assert "invalid index" in lowered
+    assert "drop index concurrently" in lowered
+    assert not _teaches_concurrent_index_under_short_timeout(text)
+    assert not _teaches_concurrent_index_in_transaction(text)
+    assert _concurrent_index_uses_autocommit_and_drop_invalid(text)
+    assert "commit after each batch" in lowered
+    assert "follow-up job" in lowered
+    assert "is null" in lowered
+    assert "zero rows" in lowered
+    assert "do not replace" in lowered
+    assert not _teaches_limit_n_in_subquery_without_remaining_rows(text)
+    assert _backfill_commits_or_uses_follow_up_job(text)
+    assert _backfill_paginates_remaining_rows(text)
+    assert _backfill_sets_session_timeouts(text)
+    assert "set `lock_timeout` and `statement_timeout` before ddl" in lowered
+    assert _concurrent_index_raises_lock_and_statement_timeouts(text)
+    assert _DROP_IF_EXISTS_THEN_CREATE.search(text) is not None
+    for para in body.split("\n\n"):
+        lowered_para = para.lower()
+        packed = "create index concurrently" in lowered_para and "add column" in lowered_para
+        assert not packed
+
+
+def test_dashboard_advice_fails_the_contract() -> None:
+    """Tokens from the skill are not enough when the text sends the human to the editor."""
+    recommend = "Use the SQL editor for this ALTER."
+    bad = recommend + " " + " ".join(_REQUIRED) + " Refuse nothing."
+    assert "sql editor" in bad.lower()
+    assert _missing_required_phrases(bad) == []
+    assert _RECOMMEND_EDITOR.search("Do not use the SQL editor") is None
+    assert _RECOMMEND_EDITOR.search("never use the SQL editor") is None
+    assert _RECOMMEND_EDITOR.search(recommend) is not None
+    assert _recommends_sql_editor(bad)
+    assert not _skill_holds_db_migrations_contract(bad)
+    skill = SKILL_PATH.read_text()
+    assert _missing_required_phrases(skill) == []
+    assert _skill_holds_db_migrations_contract(skill)
+
+
+def test_dashboard_then_pull_fails_the_contract() -> None:
+    """UI schema plus db pull / migration repair fails even with required tokens."""
+    dashboard_then_pull = (
+        "Add a column in the dashboard/table editor then supabase db pull "
+        "and migration repair. " + " ".join(_REQUIRED) + ". Refuse nothing."
+    )
+    assert _missing_required_phrases(dashboard_then_pull) == []
+    assert _recommends_dashboard_then_pull(dashboard_then_pull)
+    assert not _skill_holds_db_migrations_contract(dashboard_then_pull)
+
+
+def test_unrestricted_adhoc_reads_fail_the_contract() -> None:
+    """Allowing execute_sql for ad-hoc reads fails even with required tokens."""
+    unrestricted_reads = "Read-only queries may use execute_sql. " + " ".join(_REQUIRED) + ". Refuse nothing."
+    assert _missing_required_phrases(unrestricted_reads) == []
+    assert _UNRESTRICTED_ADHOC_READS.search(unrestricted_reads) is not None
+    assert not _skill_holds_db_migrations_contract(unrestricted_reads)
+
+
+def test_unbounded_backfill_fails_the_contract() -> None:
+    """Backfill copy without commit-per-batch or remaining-row phrases fails."""
+    backfill_phrases = {
+        "batch",
+        "commit after each batch",
+        "follow-up job",
+        "is null",
+        "order by id",
+        "zero rows",
+    }
+    unbounded_backfill = "Backfill in the migration. Refuse nothing. " + " ".join(
+        p for p in _REQUIRED if p not in backfill_phrases
+    )
+    missing = _missing_required_phrases(unbounded_backfill)
+    assert "commit after each batch" in missing
+    assert "follow-up job" in missing
+    assert not _skill_holds_db_migrations_contract(unbounded_backfill)
+
+
+def test_retry_or_dual_apply_fails_the_contract() -> None:
+    """Retry-until-works and dual agent/CI apply fail even with required tokens."""
+    retry_until_works = (
+        "db push again until it works. Apply remotes from the agent while CI also applies. "
+        + " ".join(_REQUIRED)
+        + ". Refuse nothing."
+    )
+    assert _missing_required_phrases(retry_until_works) == []
+    assert _RETRY_FAILED_APPLY.search(retry_until_works) is not None
+    assert _DUAL_AGENT_CI_APPLY.search(retry_until_works) is not None
+    assert not _skill_holds_db_migrations_contract(retry_until_works)
+
+
+def test_backfill_without_commit_or_follow_up_job_fails_the_contract() -> None:
+    """Bounded backfill without per-batch COMMIT or a follow-up job fails."""
+    bounded_no_commit = "Backfill in the migration in bounded batches. Refuse nothing. batch"
+    assert "commit after each batch" in _missing_required_phrases(bounded_no_commit)
+    assert "follow-up job" in _missing_required_phrases(bounded_no_commit)
+    assert not _backfill_commits_or_uses_follow_up_job(bounded_no_commit)
+    assert not _skill_holds_db_migrations_contract(bounded_no_commit)
+
+
+def test_limit_n_in_subquery_backfill_fails_the_contract() -> None:
+    """LIMIT-n IN-subquery backfill fails even with required tokens."""
+    tokens = " ".join(_REQUIRED) + ". Refuse nothing."
+    limit_in_loop = (
+        "Backfill in the migration in bounded batches "
+        "(UPDATE ... WHERE id IN (SELECT ... LIMIT n) in a loop). " + tokens
+    )
+    assert _missing_required_phrases(limit_in_loop) == []
+    assert _teaches_limit_n_in_subquery_without_remaining_rows(limit_in_loop)
+    assert not _skill_holds_db_migrations_contract(limit_in_loop)
+
+
+def test_keyset_backfill_with_commit_holds_the_contract() -> None:
+    """Keyset pagination plus COMMIT, timeouts, and concurrent-index phrases pass."""
+    tokens = " ".join(_REQUIRED) + ". Refuse nothing."
+    keyset = (
+        "SET lock_timeout and statement_timeout for each backfill UPDATE, then "
+        "COMMIT after each batch or a follow-up job. "
+        "UPDATE t SET new_col = src WHERE new_col IS NULL AND id > :last_id "
+        "ORDER BY id LIMIT n. Stop when a batch updates zero rows. "
+        "Own autocommit migration; DROP INDEX CONCURRENTLY IF EXISTS then "
+        "CREATE INDEX CONCURRENTLY cannot run inside a transaction. "
+        "Raise or disable lock_timeout and statement_timeout for that statement. "
+        "INVALID index. " + tokens
+    )
+    assert _missing_required_phrases(keyset) == []
+    assert not _teaches_limit_n_in_subquery_without_remaining_rows(keyset)
+    assert _backfill_commits_or_uses_follow_up_job(keyset)
+    assert _backfill_paginates_remaining_rows(keyset)
+    assert _backfill_sets_session_timeouts(keyset)
+    assert _skill_holds_db_migrations_contract(keyset)
+
+
+def test_keyset_backfill_without_session_timeouts_fails_the_contract() -> None:
+    """Keyset plus COMMIT is not enough without SET lock_timeout/statement_timeout on UPDATE."""
+    tokens = " ".join(_REQUIRED) + ". Refuse nothing."
+    keyset_no_timeouts = (
+        "COMMIT after each batch or a follow-up job. "
+        "UPDATE t SET new_col = src WHERE new_col IS NULL AND id > :last_id "
+        "ORDER BY id LIMIT n. Stop when a batch updates zero rows. " + tokens
+    )
+    assert _missing_required_phrases(keyset_no_timeouts) == []
+    assert _backfill_commits_or_uses_follow_up_job(keyset_no_timeouts)
+    assert _backfill_paginates_remaining_rows(keyset_no_timeouts)
+    assert not _backfill_sets_session_timeouts(keyset_no_timeouts)
+    assert not _skill_holds_db_migrations_contract(keyset_no_timeouts)
+
+
+def test_short_timeout_then_concurrent_index_fails_the_contract() -> None:
+    """A 5s statement_timeout next to CREATE INDEX CONCURRENTLY fails."""
+    tokens = " ".join(_REQUIRED) + ". Refuse nothing."
+    short_timeout = "SET LOCAL statement_timeout = '5s'; CREATE INDEX CONCURRENTLY. " + tokens
+    assert _missing_required_phrases(short_timeout) == []
+    assert _teaches_concurrent_index_under_short_timeout(short_timeout)
+    assert not _skill_holds_db_migrations_contract(short_timeout)
+
+
+def test_short_lock_timeout_then_concurrent_index_fails_the_contract() -> None:
+    """A 5s lock_timeout next to CREATE INDEX CONCURRENTLY fails."""
+    tokens = " ".join(_REQUIRED) + ". Refuse nothing."
+    short_lock = "SET LOCAL lock_timeout = '5s'; CREATE INDEX CONCURRENTLY. " + tokens
+    assert _missing_required_phrases(short_lock) == []
+    assert _teaches_concurrent_index_under_short_timeout(short_lock)
+    assert not _skill_holds_db_migrations_contract(short_lock)
+
+
+def test_transactional_concurrent_index_fails_the_contract() -> None:
+    """CREATE INDEX CONCURRENTLY in a transactional migration fails."""
+    tokens = " ".join(_REQUIRED) + ". Refuse nothing."
+    in_txn = "CREATE INDEX CONCURRENTLY in a transactional migration. " + tokens
+    assert _missing_required_phrases(in_txn) == []
+    assert _teaches_concurrent_index_in_transaction(in_txn)
+    assert not _skill_holds_db_migrations_contract(in_txn)
+
+
+def test_bare_concurrent_index_fails_the_contract() -> None:
+    """Bare CONCURRENTLY without autocommit/INVALID-index phrases fails."""
+    caveat = {
+        "autocommit",
+        "cannot run inside a transaction",
+        "invalid index",
+        "drop index concurrently",
+    }
+    bare = "CREATE INDEX CONCURRENTLY. " + " ".join(p for p in _REQUIRED if p not in caveat)
+    bare += ". Refuse nothing. concurrently"
+    assert "autocommit" in _missing_required_phrases(bare)
+    assert "cannot run inside a transaction" in _missing_required_phrases(bare)
+    assert "invalid index" in _missing_required_phrases(bare)
+    assert not _skill_holds_db_migrations_contract(bare)
+
+
+def test_follow_up_only_invalid_index_drop_fails_the_contract() -> None:
+    """DROP INDEX CONCURRENTLY only in a later migration fails the contract."""
+    tokens = " ".join(_REQUIRED) + ". Refuse nothing."
+    follow_up_only = (
+        "SET lock_timeout and statement_timeout for each backfill UPDATE, then COMMIT. "
+        "Own autocommit migration; CREATE INDEX CONCURRENTLY cannot run inside a transaction. "
+        "Raise or disable lock_timeout and statement_timeout for that statement. "
+        "If cancelled, DROP INDEX CONCURRENTLY on the INVALID index through the runner "
+        "in a follow-up migration. Do not repair or skip. " + tokens
+    )
+    assert _missing_required_phrases(follow_up_only) == []
+    assert not _concurrent_index_uses_autocommit_and_drop_invalid(follow_up_only)
+    assert not _skill_holds_db_migrations_contract(follow_up_only)
+
+
+def test_autocommit_drop_invalid_then_concurrent_index_holds_the_contract() -> None:
+    """Same-file autocommit DROP IF EXISTS then CREATE INDEX CONCURRENTLY passes."""
+    tokens = " ".join(_REQUIRED) + ". Refuse nothing."
+    ok = (
+        "SET lock_timeout and statement_timeout for each backfill UPDATE, then COMMIT. "
+        "Own autocommit migration; DROP INDEX CONCURRENTLY IF EXISTS then "
+        "CREATE INDEX CONCURRENTLY cannot run inside a transaction. "
+        "Raise or disable lock_timeout and statement_timeout for that statement. "
+        "If cancelled, stop. Do not repair or skip. INVALID index. " + tokens
+    )
+    assert _missing_required_phrases(ok) == []
+    assert not _teaches_concurrent_index_under_short_timeout(ok)
+    assert not _teaches_concurrent_index_in_transaction(ok)
+    assert _concurrent_index_uses_autocommit_and_drop_invalid(ok)
+    assert _concurrent_index_raises_lock_and_statement_timeouts(ok)
+    assert _skill_holds_db_migrations_contract(ok)
+
+
+def test_db_sync_vendors_db_migrations_skill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOADOUT_PATH", str(REPO))
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".loadout.yaml").write_text("source: https://github.com/sazlin/loadout\nref: main\nloadouts: [db]\n")
+    sync(project)
+    vendored = (project / ".claude/skills/db-migrations/SKILL.md").read_text()
+    assert _missing_required_phrases(vendored) == []
+    assert _skill_holds_db_migrations_contract(vendored)
