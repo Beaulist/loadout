@@ -5,5 +5,7 @@ description: >-
   python-monorepo do not include it.
 extends:
   - base
+rules:
+  - src: rules/core/migration-runner.mdc
 skills:
   - src: skills/db-migrations

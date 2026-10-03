@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add [`migration-runner`](rules/core/migration-runner.mdc) to the
+  [`db`](loadouts/db.yaml) loadout. Schema changes go through the repo's
+  migration runner. The SQL editor, table editor, and ad-hoc DDL stay refused,
+  including when the change is urgent. [`supabase`](loadouts/supabase.yaml)
+  inherits the rule. [`base`](loadouts/base.yaml) does not.
 - Add pressure evals for [`db-migrations`](skills/db-migrations/evals/evals.json).
   The prompts are a hurried SQL editor paste, `psql` with the file committed
   later, and `execute_sql` used to add a column. Passing behavior is a refusal
