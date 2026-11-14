@@ -48,7 +48,7 @@ on:
 # run is terminal so the GitHub check stays pending for the full harness, not just
 # the create handshake.
 #
-# Model: Grok 4.6 high effort, standard speed (not Fast). Fast is the Cursor
+# Model: Grok 4.7 high effort, standard speed (not Fast). Fast is the Cursor
 # default on Pro and higher; this POST sets model.params fast=false.
 concurrency:
   group: pr-review-${{ github.repository }}-${{ github.event.pull_request.head.ref }}
@@ -237,7 +237,7 @@ jobs:
               workOnCurrentBranch: true,
               autoCreatePR: false,
               model: {
-                id: "grok-4.6",
+                id: "grok-4.7",
                 params: [
                   {id: "effort", value: "high"},
                   {id: "fast", value: "false"}

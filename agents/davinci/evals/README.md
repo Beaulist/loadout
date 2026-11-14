@@ -29,8 +29,8 @@ intentionally sloppy fixtures (`user_service_slop.py` and siblings).
 ### Models
 
 - **Davinci:** `composer-2.5`
-- **Judges (cloud API):** `grok-4.5`, `grok-4.6`
-- **Judges (local CLI):** `cursor-grok-4.5-high`, `cursor-grok-4.6-high`
+- **Judges (cloud API):** `grok-4.5`, `grok-4.7`
+- **Judges (local CLI):** `cursor-grok-4.5-high`, `cursor-grok-4.7-high`
 
 ### Runtime
 

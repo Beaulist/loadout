@@ -3,7 +3,7 @@ name: risk_classifier
 description: >-
   Use when the review orchestrator asks to measure risk. Do not merge.
   Do not fix code.
-model: grok-4.6[effort=medium,fast=false]
+model: grok-4.7[effort=medium,fast=false]
 tools:
   - Read
   - Grep

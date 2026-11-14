@@ -33,8 +33,8 @@ JUDGE_RUBRIC = EVAL_ROOT / "references" / "judge-rubric.md"
 EVALS_JSON = EVAL_ROOT / "evals.json"
 
 DAVINCI_MODEL = "composer-2.5"
-JUDGE_MODELS_LOCAL = ("cursor-grok-4.5-high", "cursor-grok-4.6-high")
-JUDGE_MODELS_CLOUD = ("grok-4.5", "grok-4.6")
+JUDGE_MODELS_LOCAL = ("cursor-grok-4.5-high", "cursor-grok-4.7-high")
+JUDGE_MODELS_CLOUD = ("grok-4.5", "grok-4.7")
 CLOUD_API = "https://api.cursor.com/v1"
 DEFAULT_REPO_URL = "https://github.com/sazlin/loadout"
 

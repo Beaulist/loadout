@@ -64,8 +64,8 @@ RISK_CLASSIFIER = "risk_classifier.md"
 HARNESS_AGENTS = frozenset({ISSUE_RESOLVER, VERIFIER, RISK_CLASSIFIER})
 PR_REVIEW_HARNESS_AGENT_FILES = frozenset(REVIEW_DIMENSION_AGENTS | HARNESS_AGENTS | {REVIEW_ORCHESTRATOR})
 # Cursor subagent pins. Fast stays off. Orchestrator keeps high effort.
-PR_REVIEW_HARNESS_ORCHESTRATOR_MODEL = "grok-4.6[effort=high,fast=false]"
-PR_REVIEW_HARNESS_GROK_MODEL = "grok-4.6[effort=medium,fast=false]"
+PR_REVIEW_HARNESS_ORCHESTRATOR_MODEL = "grok-4.7[effort=high,fast=false]"
+PR_REVIEW_HARNESS_GROK_MODEL = "grok-4.7[effort=medium,fast=false]"
 PR_REVIEW_HARNESS_VERIFIER_MODEL = "composer-2.5"
 PR_REVIEW_HARNESS_GROK_AGENT_FILES = frozenset(REVIEW_DIMENSION_AGENTS | {ISSUE_RESOLVER, RISK_CLASSIFIER})
 IMPLEMENTATION_HARNESS_AGENTS = frozenset(

@@ -395,14 +395,14 @@ def test_pr_review_harness_workflow_smoke_dispatch_configuration() -> None:
     assert "cat <<EOF" not in script.replace("<<'EOF'", "")
 
 
-def test_pr_review_harness_workflow_pins_grok_4_6_high_not_fast() -> None:
+def test_pr_review_harness_workflow_pins_grok_4_7_high_not_fast() -> None:
     script = _dispatch_step_script()
-    assert 'id: "grok-4.6"' in script
+    assert 'id: "grok-4.7"' in script
     assert '{id: "effort", value: "high"}' in script
     assert '{id: "fast", value: "false"}' in script
     assert '{id: "fast", value: "true"}' not in script
     assert "high-fast" not in script
-    assert "cursor-grok-4.6-high-fast" not in script
+    assert "cursor-grok-4.7-high-fast" not in script
 
 
 def test_pr_review_harness_workflow_prompt_subprocess() -> None:
@@ -451,7 +451,7 @@ body="$(jq -n \\
     workOnCurrentBranch: true,
     autoCreatePR: false,
     model: {{
-      id: "grok-4.6",
+      id: "grok-4.7",
       params: [
         {{id: "effort", value: "high"}},
         {{id: "fast", value: "false"}}
