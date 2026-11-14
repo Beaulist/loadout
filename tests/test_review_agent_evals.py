@@ -304,39 +304,15 @@ def _assert_orchestrator_github_comment_spec(text: str) -> None:
     assert "deferred minors" in lowered
 
 
-def _assert_risk_classifier_github_comment_spec(text: str) -> None:
-    """Option-G risk_classifier PR comment contract: stage table, alerts, redacted errors."""
+def _assert_risk_classifier_does_not_merge(text: str) -> None:
+    """Classifier emits JSON and does not merge or comment, whatever the risk is."""
     lowered = text.lower()
-    assert "### Risk classifier" in text
-    assert "| Risk | Merge | Checks | Action |" in text
-    assert "[!WARNING]" in text
-    assert "[!CAUTION]" in text
-    assert "<details>" in text
-    assert "one sentence per bullet" in lowered
-    assert "--body-file" in text
-    assert "--edit-last" in text
-    # WARNING only when checks green and merge blocked
-    assert "merge blocked **and** required checks are green" in text
-    assert "required checks pending or failing → no `[!WARNING]`" in text
-    assert "Checks pending or failing" in text
-    assert "table-only" in lowered
-    assert "do not reuse the" in lowered and "merge-blocked" in lowered
-    assert "while ci is red or pending" in lowered
-    # Sanitized merge errors, not raw stderr
-    assert "sanitized merge errors" in lowered
-    assert "never paste raw credentials from `gh`" in lowered
-    assert "stderr in pr comments" in lowered
-    assert "redact tokens, pats, authorization headers" in lowered
-    assert "post a short sanitized summary" in lowered
-    assert "never paste verbatim" in lowered
-    assert "post raw tokens, pats, or credentials from `gh` stderr" in lowered
-    assert "classification approach:" in lowered
-    assert "jev-latest" in text
-    assert "local rubric" in lowered
-    assert "typesafe_api_key unset" in lowered
-    assert "jev call failed" in lowered
-    assert "jev confidence below 0.8" in lowered
-    assert "jev body is 148k chars or more" in lowered
+    assert "emit json. do not merge yourself regardless of your classification." in lowered
+    assert "gh pr merge" not in lowered
+    assert "--squash" not in lowered
+    assert '"merge": "not_performed"' in text
+    assert "do not post a github comment" in lowered
+    assert "you are not the fixer, not the orchestrator, and not the merger." in lowered
 
 
 def test_every_agent_file_is_classified() -> None:
@@ -931,14 +907,14 @@ def test_orchestrator_aborts_when_the_pull_request_is_merged() -> None:
         assert "abort" in invoked
 
 
-def test_risk_classifier_github_comments_use_stage_table_with_human_action_alerts() -> None:
-    _assert_risk_classifier_github_comment_spec(_agent_file(RISK_CLASSIFIER).read_text())
+def test_risk_classifier_emits_json_and_does_not_merge() -> None:
+    _assert_risk_classifier_does_not_merge(_agent_file(RISK_CLASSIFIER).read_text())
 
 
 def test_vendored_harness_agents_match_github_comment_stage_table_contract() -> None:
     claude = REPO / ".claude" / "agents"
     _assert_orchestrator_github_comment_spec((claude / "review_orchestrator.md").read_text())
-    _assert_risk_classifier_github_comment_spec((claude / "risk_classifier.md").read_text())
+    _assert_risk_classifier_does_not_merge((claude / "risk_classifier.md").read_text())
 
 
 def test_orchestrator_does_not_use_linear_as_artifact_rally_point() -> None:
@@ -1172,16 +1148,6 @@ def test_issue_resolver_eval_uses_hashed_tasks_fixture() -> None:
     assert "TASKS_TO_RESOLVE-" in prompt
     assert all("TASKS_TO_RESOLVE-" in relative for relative in entry["files"] if "TASKS_TO_RESOLVE" in relative)
     assert not any(relative.endswith("/TASKS_TO_RESOLVE.md") for relative in entry["files"])
-
-
-def test_risk_classifier_squash_merges_without_admin() -> None:
-    text = _agent_file(RISK_CLASSIFIER).read_text().lower()
-    assert "gh pr merge" in text
-    assert "--squash" in text
-    assert "--admin" in text
-    assert "never" in text
-    assert "required checks" in text
-    assert "low risk" in text or "low-risk" in text
 
 
 def test_risk_classifier_uses_jev_when_typesafe_api_key_is_set() -> None:
