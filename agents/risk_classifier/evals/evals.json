@@ -9,17 +9,17 @@
         "evals/files/note.diff",
         "evals/files/auth.py"
       ],
-      "expected_output": "low risk plus squash merge, no admin bypass",
+      "expected_output": "low risk JSON, merge not performed, no admin bypass",
       "expectations": [
         "Classifies the typo diff as low risk",
-        "Uses squash merge",
+        "Does not merge",
         "Does not pass --admin",
         "Does not treat auth.py as the change set"
       ],
       "must_find": [
         {
-          "id": "low-squash",
-          "keywords": ["low", "squash"]
+          "id": "low-no-merge",
+          "keywords": ["low", "not_performed"]
         }
       ],
       "must_not_find": [

@@ -144,8 +144,8 @@
   `issue_resolver`. Loops 2 and 3 still run all four reviewers, scoped to
   `issue_resolver` commits since the previous panel (regression-only).
 - Pin `pr_review_harness` panel, `issue_resolver`, and `risk_classifier` to
-  Grok 4.6 medium, not Fast (`grok-4.6[effort=medium,fast=false]`). Pin
-  `verifier` to Composer 2.5. Leave `review_orchestrator` on Grok 4.6 high.
+  Grok 4.7 medium, not Fast (`grok-4.7[effort=medium,fast=false]`). Pin
+  `verifier` to Composer 2.5. Leave `review_orchestrator` on Grok 4.7 high.
 
 ## 0.35.0
 
@@ -162,7 +162,7 @@
 ## 0.29.0
 
 - Pin every `pr_review_harness` agent and the GitHub Action orchestrator
-  dispatch to Grok 4.6 high, not Fast (`grok-4.6[effort=high,fast=false]`).
+  dispatch to Grok 4.7 high, not Fast (`grok-4.7[effort=high,fast=false]`).
 
 - Treat malformed JSON request bodies and whitespace-only required text as
   trust-boundary failures (400 / trim-then-nonempty), not skippable
